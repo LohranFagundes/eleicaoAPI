@@ -1,0 +1,6 @@
+@ElectionApi.Net_HostAddress = http://localhost:5185
+
+GET {{ElectionApi.Net_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
