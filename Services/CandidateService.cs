@@ -9,15 +9,18 @@ public class CandidateService : ICandidateService
 {
     private readonly IRepository<Candidate> _candidateRepository;
     private readonly IRepository<Position> _positionRepository;
+    private readonly IRepository<Election> _electionRepository;
     private readonly IAuditService _auditService;
 
     public CandidateService(
         IRepository<Candidate> candidateRepository,
         IRepository<Position> positionRepository,
+        IRepository<Election> electionRepository,
         IAuditService auditService)
     {
         _candidateRepository = candidateRepository;
         _positionRepository = positionRepository;
+        _electionRepository = electionRepository;
         _auditService = auditService;
     }
 
@@ -75,9 +78,14 @@ public class CandidateService : ICandidateService
 
     public async Task<CandidateResponseDto> CreateCandidateAsync(CreateCandidateDto createDto, int createdBy)
     {
-        var position = await _positionRepository.GetByIdAsync(createDto.PositionId);
+        var position = await _positionRepository.GetQueryable()
+            .Include(p => p.Election)
+            .FirstOrDefaultAsync(p => p.Id == createDto.PositionId);
         if (position == null)
             throw new ArgumentException("Position not found");
+
+        if (position.Election != null && position.Election.IsSealed)
+            throw new InvalidOperationException("Cannot add candidates to sealed elections");
 
         var candidateCount = await _candidateRepository.GetQueryable()
             .CountAsync(c => c.PositionId == createDto.PositionId && c.IsActive);
@@ -108,8 +116,14 @@ public class CandidateService : ICandidateService
 
     public async Task<CandidateResponseDto?> UpdateCandidateAsync(int id, UpdateCandidateDto updateDto, int updatedBy)
     {
-        var candidate = await _candidateRepository.GetByIdAsync(id);
+        var candidate = await _candidateRepository.GetQueryable()
+            .Include(c => c.Position)
+            .ThenInclude(p => p.Election)
+            .FirstOrDefaultAsync(c => c.Id == id);
         if (candidate == null) return null;
+
+        if (candidate.Position?.Election?.IsSealed == true)
+            throw new InvalidOperationException("Cannot modify candidates in sealed elections");
 
         if (!string.IsNullOrEmpty(updateDto.Name))
             candidate.Name = updateDto.Name;
@@ -152,8 +166,14 @@ public class CandidateService : ICandidateService
 
     public async Task<bool> DeleteCandidateAsync(int id)
     {
-        var candidate = await _candidateRepository.GetByIdAsync(id);
+        var candidate = await _candidateRepository.GetQueryable()
+            .Include(c => c.Position)
+            .ThenInclude(p => p.Election)
+            .FirstOrDefaultAsync(c => c.Id == id);
         if (candidate == null) return false;
+
+        if (candidate.Position?.Election?.IsSealed == true)
+            throw new InvalidOperationException("Cannot delete candidates from sealed elections");
 
         await _candidateRepository.DeleteAsync(candidate);
         return true;

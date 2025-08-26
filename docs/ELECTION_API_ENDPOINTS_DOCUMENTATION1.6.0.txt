@@ -1,0 +1,1736 @@
+===============================================================================
+                      ELECTION API .NET - DOCUMENTAÇÃO COMPLETA
+                               Versão: 1.6.0
+                         Data: 2025-08-25
+===============================================================================
+
+ÍNDICE:
+1. VISÃO GERAL
+2. AUTENTICAÇÃO
+3. FORMATO DE RESPOSTA
+4. CONTROLLERS E ENDPOINTS
+5. MODELOS DE DADOS (DTOs)
+6. CÓDIGOS DE STATUS HTTP
+7. EXEMPLOS DE USO
+
+===============================================================================
+1. VISÃO GERAL
+===============================================================================
+
+Base URL: https://api.election.com/api
+Formato: JSON
+Autenticação: Bearer Token (JWT)
+Timezone: America/Sao_Paulo (BRT)
+
+A API Election suporta operações para:
+- Autenticação de administradores e eleitores
+- Gerenciamento de eleições, posições e candidatos
+- Sistema de votação (simples e múltipla automática)
+- Relatórios e auditoria
+- Gerenciamento de companies
+- Sistema de lacres (seals) para integridade
+- Sistema de testes e validação
+- Gerenciamento completo de administradores
+- Sistema aprimorado de autenticação com auditoria
+
+===============================================================================
+2. AUTENTICAÇÃO
+===============================================================================
+
+A API utiliza JWT (JSON Web Tokens) para autenticação. 
+
+Roles disponíveis:
+- admin: Administrador do sistema
+- master: Super administrador
+- voter: Eleitor
+
+Formato do token no header:
+Authorization: Bearer <seu_jwt_token>
+
+===============================================================================
+3. FORMATO DE RESPOSTA
+===============================================================================
+
+Todas as respostas seguem o padrão ApiResponse<T>:
+
+SUCESSO:
+{
+  "success": true,
+  "message": "Mensagem de sucesso",
+  "data": { ... },
+  "errors": null
+}
+
+ERRO:
+{
+  "success": false,
+  "message": "Mensagem de erro",
+  "data": null,
+  "errors": { ... }
+}
+
+PAGINAÇÃO:
+{
+  "success": true,
+  "data": {
+    "items": [...],
+    "totalItems": 100,
+    "totalPages": 10,
+    "currentPage": 1,
+    "hasNextPage": true,
+    "hasPreviousPage": false
+  }
+}
+
+===============================================================================
+4. CONTROLLERS E ENDPOINTS
+===============================================================================
+
+4.1 AUTH CONTROLLER - /api/auth
+===============================================================================
+
+POST /api/auth/admin/login
+Descrição: Login de administrador
+Auth: Não requerida
+Body: {
+  "email": "admin@example.com",
+  "password": "senha123"
+}
+Response: {
+  "success": true,
+  "data": {
+    "token": "jwt_token_aqui",
+    "user": {
+      "id": 1,
+      "name": "Admin User",
+      "email": "admin@example.com",
+      "role": "admin",
+      "permissions": "all"
+    },
+    "expiresIn": 3600
+  }
+}
+
+POST /api/auth/voter/login
+Descrição: Login de eleitor
+Auth: Não requerida
+Body: {
+  "email": "eleitor@example.com",
+  "password": "senha123"
+}
+Response: Similar ao admin login
+
+POST /api/auth/logout
+Descrição: Logout do usuário
+Auth: Bearer Token
+Body: Não requerido
+Response: { "success": true, "message": "Logged out successfully" }
+
+POST /api/auth/validate
+Descrição: Validar token JWT
+Auth: Bearer Token
+Body: Não requerido
+Response: {
+  "success": true,
+  "data": {
+    "valid": true,
+    "userId": 1,
+    "role": "admin"
+  }
+}
+
+4.2 ELECTION CONTROLLER - /api/election
+===============================================================================
+
+GET /api/election
+Descrição: Listar eleições (paginado)
+Auth: admin
+Query Params: page=1, limit=10, status=active, type=internal
+Response: PagedResult<ElectionResponseDto>
+
+GET /api/election/{id}
+Descrição: Obter eleição por ID
+Auth: admin
+Path: id (int)
+Response: ElectionResponseDto
+
+POST /api/election
+Descrição: Criar nova eleição
+Auth: admin
+Body: {
+  "title": "Eleição Teste 2024",
+  "description": "Descrição da eleição",
+  "electionType": "internal",
+  "startDate": "2024-12-01T09:00:00",
+  "endDate": "2024-12-01T18:00:00",
+  "timezone": "America/Sao_Paulo",
+  "allowBlankVotes": true,
+  "allowNullVotes": true,
+  "requireJustification": false,
+  "maxVotesPerVoter": 1,
+  "votingMethod": "single_choice",
+  "resultsVisibility": "after_election",
+  "companyId": 1
+}
+Response: ElectionResponseDto
+
+PUT /api/election/{id}
+Descrição: Atualizar eleição
+Auth: admin
+Path: id (int)
+Body: UpdateElectionDto (campos opcionais)
+Response: ElectionResponseDto
+
+DELETE /api/election/{id}
+Descrição: Deletar eleição
+Auth: admin
+Path: id (int)
+Response: { "success": true, "message": "Election deleted successfully" }
+
+PATCH /api/election/{id}/status
+Descrição: Atualizar status da eleição
+Auth: admin
+Path: id (int)
+Body: { "status": "active" }
+Status válidos: "draft", "active", "completed", "cancelled"
+Response: Success message
+Observações: 
+- Status "completed" automaticamente sela a eleição
+- Status "active" garante que a eleição não esteja selada
+- Campo "status" é retornado em todas as consultas de eleições
+- Eleições lacradas (IsSealed = true) aceitam votos mas não permitem alterações
+- Eleições não lacradas (IsSealed = false) permitem alterações mas não aceitam votos
+
+GET /api/election/active
+Descrição: Obter eleições ativas
+Auth: Não requerida
+Response: IEnumerable<ElectionResponseDto>
+
+POST /api/election/{id}/seal
+Descrição: Lacrar eleição
+Auth: admin
+Path: id (int)
+Body: Não requerido
+Response: ElectionSealResponseDto
+
+GET /api/election/{id}/seal/status
+Descrição: Status do lacre da eleição
+Auth: admin
+Path: id (int)
+Response: ElectionSealStatusResponseDto
+
+POST /api/election/{id}/seal/validate
+Descrição: Validar lacre da eleição
+Auth: admin
+Path: id (int)
+Body: Não requerido
+Response: { "success": true, "data": boolean }
+
+4.3 VOTING CONTROLLER - /api/voting
+===============================================================================
+
+POST /api/voting/login
+Descrição: Login específico para votação
+Auth: Não requerida
+Body: {
+  "cpf": "12345678901",
+  "password": "senha123",
+  "electionId": 1
+}
+Response: Login response com token temporário
+Observações:
+- Requer eleição lacrada (IsSealed = true) para permitir login
+- electionId é obrigatório no corpo da requisição
+- Voter deve estar ativo para fazer login
+
+GET /api/voting/election/{electionId}/status
+Descrição: Status da eleição para votação
+Auth: voter
+Path: electionId (int)
+Response: ElectionStatusDto
+
+POST /api/voting/cast-vote
+Descrição: Registrar voto simples (uma posição por vez)
+Auth: voter
+Body: {
+  "electionId": 1,
+  "positionId": 1,
+  "candidateId": 5,
+  "isBlankVote": false,
+  "isNullVote": false,
+  "justification": null
+}
+Response: VoteReceiptDto
+Observações:
+- Só funciona em eleições lacradas (IsSealed = true)
+- Verifica se voter ainda não votou na eleição
+- Gera comprovante criptográfico do voto
+- DETECTA AUTOMATICAMENTE múltiplos cargos e força uso de votação múltipla
+- Se a eleição possui múltiplos cargos, retorna erro direcionando para cast-multiple-votes
+
+POST /api/voting/cast-multiple-votes
+Descrição: Registrar múltiplos votos (várias posições simultaneamente)
+Auth: voter
+Body: {
+  "electionId": 1,
+  "votes": [
+    {
+      "positionId": 1,
+      "candidateId": 5,
+      "isBlankVote": false,
+      "isNullVote": false
+    },
+    {
+      "positionId": 2,
+      "candidateId": null,
+      "isBlankVote": true,
+      "isNullVote": false
+    }
+  ],
+  "justification": "Justificativa opcional"
+}
+Response: VoteReceiptDto
+Observações:
+- Só funciona em eleições lacradas (IsSealed = true)
+- Permite votar em múltiplas posições de uma só vez
+- OBRIGATÓRIO para eleições com múltiplos cargos
+- VALIDA que todos os cargos da eleição sejam votados
+- Deve votar em pelo menos uma posição (mínimo 1 voto no array)
+- Verifica se voter ainda não votou na eleição
+- Processa TODOS os votos antes de gerar comprovante (transação)
+- Gera comprovante criptográfico único para todos os votos
+
+GET /api/voting/receipt/{receiptToken}
+Descrição: Obter comprovante de voto
+Auth: Não requerida
+Path: receiptToken (string)
+Response: VoteReceiptDto
+
+GET /api/voting/has-voted/{electionId}
+Descrição: Verificar se eleitor já votou
+Auth: voter
+Path: electionId (int)
+Response: { "success": true, "data": boolean }
+
+POST /api/voting/zero-report/{electionId}
+Descrição: Gerar relatório zeresima
+Auth: admin
+Path: electionId (int)
+Response: ZeroReportDto
+
+GET /api/voting/integrity-report/{electionId}
+Descrição: Relatório de integridade
+Auth: admin
+Path: electionId (int)
+Response: IntegrityReportDto
+
+GET /api/voting/can-vote/{electionId}
+Descrição: Verificar se pode votar
+Auth: voter
+Path: electionId (int)
+Response: { "success": true, "data": boolean }
+Observações: 
+- Retorna true apenas para eleições lacradas (IsSealed = true)
+- Verifica se a eleição está dentro do período de votação
+- Verifica se o voter está ativo
+
+4.4 VOTING PORTAL CONTROLLER - /api/voting-portal
+===============================================================================
+
+GET /api/voting-portal/elections/{electionId}/candidates
+Descrição: Obter candidatos para portal de votação
+Auth: Não requerida
+Path: electionId (int)
+Response: VotingPortalElectionDto
+
+GET /api/voting-portal/elections/{electionId}/validate
+Descrição: Validar eleição para votação
+Auth: Não requerida
+Path: electionId (int)
+Response: ElectionValidationDto
+
+GET /api/voting-portal/positions/{positionId}/candidates
+Descrição: Candidatos por posição
+Auth: Não requerida
+Path: positionId (int)
+Response: List<VotingPortalCandidateDto>
+
+4.5 COMPANY CONTROLLER - /api/company
+===============================================================================
+
+POST /api/company
+Descrição: Criar company
+Auth: admin
+Body: {
+  "name": "Empresa Teste LTDA",
+  "cnpj": "12.345.678/0001-90",
+  "email": "contato@empresa.com",
+  "phone": "(11) 99999-9999",
+  "address": "Rua da Empresa, 123",
+  "city": "São Paulo",
+  "state": "SP",
+  "zipCode": "01234-567",
+  "isActive": true
+}
+Response: CompanyResponseDto
+
+GET /api/company/{id}
+Descrição: Obter company por ID
+Auth: admin
+Path: id (int)
+Response: CompanyResponseDto
+
+GET /api/company
+Descrição: Listar companies
+Auth: admin
+Query Params: includeInactive=false
+Response: IEnumerable<CompanyResponseDto>
+
+PUT /api/company/{id}
+Descrição: Atualizar company
+Auth: admin
+Path: id (int)
+Body: CompanyUpdateDto
+Response: CompanyResponseDto
+
+DELETE /api/company/{id}
+Descrição: Deletar company
+Auth: admin
+Path: id (int)
+Response: Success message
+
+POST /api/company/{id}/logo
+Descrição: Upload logo da company
+Auth: admin
+Path: id (int)
+Body: Form-data com arquivo (logoFile)
+Response: { "success": true, "data": "url_do_logo" }
+
+DELETE /api/company/{id}/logo
+Descrição: Deletar logo da company
+Auth: admin
+Path: id (int)
+Response: Success message
+
+4.6 ADMIN MANAGEMENT CONTROLLER - /api/adminmanagement
+===============================================================================
+
+GET /api/adminmanagement
+Descrição: Listar administradores
+Auth: admin, master
+Query Params: page=1, limit=10
+Response: PagedResult<AdminResponseDto>
+
+GET /api/adminmanagement/{id}
+Descrição: Obter admin por ID
+Auth: admin, master
+Path: id (int)
+Response: AdminResponseDto
+
+POST /api/adminmanagement
+Descrição: Criar novo administrador
+Auth: admin, master
+Body: {
+  "name": "Admin Novo",
+  "email": "novo@admin.com",
+  "password": "senha123",
+  "role": "admin",
+  "permissions": "read,write",
+  "isActive": true,
+  "isSuper": false
+}
+Response: AdminResponseDto
+
+PUT /api/adminmanagement/{id}
+Descrição: Atualizar administrador
+Auth: admin, master
+Path: id (int)
+Body: UpdateAdminDto
+Response: AdminResponseDto
+
+DELETE /api/adminmanagement/{id}
+Descrição: Desativar administrador
+Auth: admin, master
+Path: id (int)
+Response: Success message
+
+POST /api/adminmanagement/{id}/reactivate
+Descrição: Reativar administrador
+Auth: admin, master
+Path: id (int)
+Response: Success message
+
+4.7 CANDIDATE CONTROLLER - /api/candidate
+===============================================================================
+
+GET /api/candidate
+Descrição: Listar candidatos
+Auth: admin
+Query Params: page=1, limit=10, positionId=1, isActive=true
+Response: PagedResult<CandidateResponseDto>
+
+GET /api/candidate/{id}
+Descrição: Obter candidato por ID
+Auth: admin
+Path: id (int)
+Response: CandidateResponseDto
+
+GET /api/candidate/position/{positionId}
+Descrição: Candidatos por posição
+Auth: Qualquer autenticado
+Path: positionId (int)
+Response: IEnumerable<CandidateResponseDto>
+
+GET /api/candidate/position/{positionId}/with-votes
+Descrição: Candidatos com contagem de votos
+Auth: admin
+Path: positionId (int)
+Response: IEnumerable<CandidateWithVotesDto>
+
+POST /api/candidate
+Descrição: Criar candidato
+Auth: admin
+Body: {
+  "name": "Candidato Teste",
+  "number": "123",
+  "description": "Descrição do candidato",
+  "biography": "Biografia completa",
+  "photoUrl": "https://example.com/foto.jpg",
+  "orderPosition": 1,
+  "positionId": 1
+}
+Response: CandidateResponseDto
+
+PUT /api/candidate/{id}
+Descrição: Atualizar candidato
+Auth: admin
+Path: id (int)
+Body: UpdateCandidateDto
+Response: CandidateResponseDto
+
+DELETE /api/candidate/{id}
+Descrição: Deletar candidato
+Auth: admin
+Path: id (int)
+Response: Success message
+
+POST /api/candidate/{id}/upload-photo
+Descrição: Upload foto do candidato (arquivo)
+Auth: admin
+Path: id (int)
+Body: Form-data com arquivo (photo)
+Response: { "success": true, "data": {"photoUrl": "..."} }
+
+POST /api/candidate/{id}/upload-photo-blob
+Descrição: Upload foto do candidato (BLOB)
+Auth: admin
+Path: id (int)
+Body: Form-data com arquivo (photo)
+Response: Dados otimizados da foto
+
+GET /api/candidate/{id}/photo
+Descrição: Obter foto do candidato
+Auth: Qualquer
+Path: id (int)
+Response: Informações da foto ou dados Base64
+
+PUT /api/candidate/position/{positionId}/reorder
+Descrição: Reordenar candidatos
+Auth: admin
+Path: positionId (int)
+Body: { "candidateId": newOrder, ... }
+Response: Success message
+
+4.8 POSITION CONTROLLER - /api/position
+===============================================================================
+
+GET /api/position
+Descrição: Listar posições
+Auth: admin
+Query Params: page=1, limit=10, electionId=1, isActive=true
+Response: PagedResult<PositionResponseDto>
+
+GET /api/position/{id}
+Descrição: Obter posição por ID
+Auth: admin
+Path: id (int)
+Response: PositionResponseDto
+
+GET /api/position/{id}/with-candidates
+Descrição: Posição com candidatos
+Auth: admin
+Path: id (int)
+Response: PositionWithCandidatesDto
+
+GET /api/position/election/{electionId}
+Descrição: Posições por eleição
+Auth: Qualquer autenticado
+Path: electionId (int)
+Response: IEnumerable<PositionResponseDto>
+
+POST /api/position
+Descrição: Criar posição
+Auth: admin
+Body: {
+  "title": "Presidente",
+  "description": "Posição de presidente",
+  "maxVotesPerVoter": 1,
+  "orderPosition": 1,
+  "electionId": 1
+}
+Response: PositionResponseDto
+
+PUT /api/position/{id}
+Descrição: Atualizar posição
+Auth: admin
+Path: id (int)
+Body: UpdatePositionDto
+Response: PositionResponseDto
+
+DELETE /api/position/{id}
+Descrição: Deletar posição
+Auth: admin
+Path: id (int)
+Response: Success message
+
+PUT /api/position/election/{electionId}/reorder
+Descrição: Reordenar posições
+Auth: admin
+Path: electionId (int)
+Body: { "positionId": newOrder, ... }
+Response: Success message
+
+4.9 VOTER CONTROLLER - /api/voter
+===============================================================================
+
+GET /api/voter
+Descrição: Listar eleitores
+Auth: admin
+Query Params: page=1, limit=10, isActive=true, isVerified=true
+Response: PagedResult<VoterResponseDto>
+
+GET /api/voter/{id}
+Descrição: Obter eleitor por ID
+Auth: admin
+Path: id (int)
+Response: VoterResponseDto
+
+GET /api/voter/profile
+Descrição: Perfil do eleitor logado
+Auth: voter
+Response: VoterResponseDto
+
+GET /api/voter/statistics
+Descrição: Estatísticas de eleitores
+Auth: admin
+Response: VoterStatisticsDto
+
+POST /api/voter
+Descrição: Criar eleitor
+Auth: admin
+Body: {
+  "name": "Eleitor Teste",
+  "email": "eleitor@test.com",
+  "cpf": "12345678901",
+  "phone": "(11) 99999-9999",
+  "password": "senha123",
+  "voteWeight": 1.0,
+  "isActive": true
+}
+Response: VoterResponseDto
+
+PUT /api/voter/{id}
+Descrição: Atualizar eleitor
+Auth: admin
+Path: id (int)
+Body: UpdateVoterDto
+Response: VoterResponseDto
+
+PUT /api/voter/profile
+Descrição: Atualizar próprio perfil
+Auth: voter
+Body: UpdateVoterDto (campos limitados)
+Response: VoterResponseDto
+
+DELETE /api/voter/{id}
+Descrição: Deletar eleitor
+Auth: admin
+Path: id (int)
+Response: Success message
+
+POST /api/voter/verify-email
+Descrição: Verificar email do eleitor
+Auth: Não requerida
+Body: { "verificationToken": "token_aqui" }
+Response: Success message
+
+POST /api/voter/{id}/send-verification
+Descrição: Enviar email de verificação
+Auth: admin
+Path: id (int)
+Response: Success message
+
+POST /api/voter/change-password
+Descrição: Alterar senha
+Auth: voter
+Body: {
+  "currentPassword": "senha_atual",
+  "newPassword": "nova_senha"
+}
+Response: Success message
+
+POST /api/voter/forgot-password
+Descrição: Solicitar redefinição de senha (novo sistema seguro)
+Auth: Não requerida
+Body: {
+  "email": "eleitor@test.com"
+}
+Response: {
+  "success": true,
+  "data": {
+    "message": "Se o email existir em nossa base de dados, você receberá um link para redefinir sua senha.",
+    "tokenExpiry": "2025-08-25T18:59:09.04103:00",
+    "success": true
+  }
+}
+Observações:
+- Sistema seguro com token criptográfico de 30 minutos
+- Email enviado com link para o frontend do votante (localhost:5112 em dev)
+- Sempre retorna sucesso para evitar enumeração de emails
+- Em desenvolvimento usa texto simples para evitar redirecionamentos do Office365
+
+POST /api/voter/reset-password-with-token
+Descrição: Redefinir senha usando token seguro
+Auth: Não requerida
+Body: {
+  "token": "o_token_recebido_por_email",
+  "newPassword": "nova_senha_123",
+  "confirmPassword": "nova_senha_123"
+}
+Response: {
+  "success": true,
+  "message": "Senha redefinida com sucesso"
+}
+Observações:
+- Token deve ser válido e não expirado (30 minutos)
+- Validação de confirmação de senha obrigatória
+- Bloqueado durante eleições ativas por segurança
+- Sistema de auditoria completo para rastreamento
+
+POST /api/voter/reset-password
+Descrição: Resetar senha (método legado - deprecated)
+Auth: Não requerida
+Body: {
+  "email": "eleitor@test.com",
+  "newPassword": "nova_senha"
+}
+Response: Success message
+Observações:
+- DEPRECATED: Use forgot-password + reset-password-with-token
+- Mantido para compatibilidade com versões antigas
+
+4.10 EMAIL CONTROLLER - /api/email
+===============================================================================
+
+POST /api/email/send
+Descrição: Enviar email individual
+Auth: admin
+Body: {
+  "toEmail": "destino@test.com",
+  "toName": "Destinatário",
+  "subject": "Assunto",
+  "body": "Corpo do email",
+  "isHtml": true
+}
+Response: EmailResponseDto
+
+POST /api/email/send-bulk
+Descrição: Enviar email em massa
+Auth: admin
+Body: {
+  "subject": "Assunto",
+  "body": "Corpo do email",
+  "recipients": ["email1@test.com", "email2@test.com"],
+  "isHtml": true
+}
+Response: BulkEmailResponseDto
+
+POST /api/email/send-template
+Descrição: Enviar email com template
+Auth: admin
+Body: {
+  "toEmail": "destino@test.com",
+  "toName": "Nome",
+  "template": {
+    "templateName": "welcome",
+    "variables": { "name": "João" }
+  }
+}
+Response: EmailResponseDto
+
+GET /api/email/history
+Descrição: Histórico de emails
+Auth: admin
+Query Params: startDate, endDate, limit=50
+Response: IEnumerable<EmailStatusDto>
+
+GET /api/email/status/{emailId}
+Descrição: Status de email específico
+Auth: admin
+Path: emailId (string)
+Response: EmailStatusDto
+
+POST /api/email/validate-config
+Descrição: Validar configuração de email
+Auth: admin
+Response: { "success": true, "data": { "isValid": boolean } }
+
+POST /api/email/test
+Descrição: Enviar email de teste
+Auth: admin
+Body: {
+  "toEmail": "teste@test.com",
+  "toName": "Nome Teste"
+}
+Response: EmailResponseDto
+
+4.11 REPORT CONTROLLER - /api/report
+===============================================================================
+
+GET /api/report/audit-logs
+Descrição: Logs de auditoria
+Auth: admin
+Query Params: AuditLogFilterDto
+Response: PagedResult<AuditLogResponseDto>
+
+GET /api/report/debug-test
+Descrição: Endpoint de debug
+Auth: Não requerida
+Response: Debug info
+
+GET /api/report/debug-audit-logs
+Descrição: Debug dos audit logs
+Auth: Não requerida
+Response: Debug audit info
+
+GET /api/report/audit-logs/{id}
+Descrição: Log específico
+Auth: admin
+Path: id (int)
+Response: AuditLogResponseDto
+
+GET /api/report/statistics
+Descrição: Estatísticas de auditoria
+Auth: admin
+Query Params: startDate, endDate
+Response: AuditStatisticsDto
+
+GET /api/report/security-report
+Descrição: Relatório de segurança
+Auth: admin
+Query Params: startDate (required), endDate (required)
+Response: SecurityReportDto
+
+GET /api/report/user-activity/{userId}
+Descrição: Atividade de usuário
+Auth: admin
+Path: userId (int)
+Query Params: startDate, endDate
+Response: IEnumerable<AuditLogResponseDto>
+
+GET /api/report/entity-history/{entityType}/{entityId}
+Descrição: Histórico de entidade
+Auth: admin
+Path: entityType (string), entityId (int)
+Response: IEnumerable<AuditLogResponseDto>
+
+GET /api/report/suspicious-activity
+Descrição: Atividade suspeita
+Auth: admin
+Query Params: startDate, endDate
+Response: IEnumerable<SuspiciousActivityDto>
+
+POST /api/report/export
+Descrição: Exportar logs
+Auth: admin
+Body: {
+  "format": "csv",
+  "startDate": "2024-01-01",
+  "endDate": "2024-12-31",
+  "filters": {...}
+}
+Response: File download
+
+POST /api/report/cleanup-old-logs
+Descrição: Limpar logs antigos
+Auth: admin
+Query Params: retentionDays=365
+Response: { "success": true, "data": { "deleted": boolean } }
+
+GET /api/report/dashboard
+Descrição: Dados do dashboard
+Auth: admin
+Response: Dashboard data
+
+GET /api/report/real-time
+Descrição: Logs em tempo real
+Auth: admin
+Query Params: limit=20
+Response: IEnumerable<AuditLogResponseDto>
+
+4.12 ELECTION REPORTS CONTROLLER - /api/election-reports
+===============================================================================
+
+POST /api/election-reports/{electionId}/send-zero-report
+Descrição: Enviar relatório zeresima por email (deve ser executado até 1 minuto antes do início da eleição para eleições não seladas - eleições seladas podem enviar a qualquer momento)
+Auth: admin
+Path: electionId (int)
+Body: Não requerido
+Response: {
+  "success": true,
+  "data": {
+    "electionId": 1,
+    "electionTitle": "Eleição Teste 2024",
+    "emailsSent": 3,
+    "recipients": ["admin1@test.com", "admin2@test.com", "admin3@test.com"],
+    "emailResult": true
+  },
+  "message": "Relatório zeresima enviado com sucesso por email"
+}
+Observações:
+- Verifica se a eleição está ativa, agendada ou selada
+- Para eleições não seladas: deve ser executado até 1 minuto antes do início da eleição (ajustado para testes)
+- Para eleições seladas: pode ser executado a qualquer momento sem restrição de tempo
+- Gera relatório zeresima via serviço de votação
+- Envia email HTML para todos os administradores ativos no sistema
+- Sistema de logs detalhados para rastreabilidade de administradores e emails enviados
+- Logs incluem: número de admins encontrados, detalhes de cada admin (ID, nome, email, status), e emails filtrados para envio
+- Template inclui informações de candidatos, cargos e hash do relatório
+
+POST /api/election-reports/{electionId}/send-final-report
+Descrição: Enviar relatório final de eleição por email
+Auth: admin
+Path: electionId (int)
+Body: Não requerido
+Response: {
+  "success": true,
+  "data": {
+    "electionId": 1,
+    "electionTitle": "Eleição Teste 2024",
+    "emailsSent": 3,
+    "recipients": ["admin1@test.com", "admin2@test.com", "admin3@test.com"],
+    "emailResult": true
+  },
+  "message": "Relatório final enviado com sucesso por email"
+}
+Observações:
+- Verifica se a eleição terminou (data fim < agora)
+- Gera relatório final com contagem de votos e resultados
+- Envia email HTML para todos os administradores ativos no sistema
+- Template inclui ranking de candidatos, percentuais e estatísticas completas
+- Sistema de logs detalhados para rastreabilidade de administradores e emails enviados
+- Logs incluem: número de admins encontrados, detalhes de cada admin (ID, nome, email, status), e emails filtrados para envio
+
+4.13 SYSTEM SEAL CONTROLLER - /api/systemseal
+===============================================================================
+
+POST /api/systemseal/generate/{electionId}
+Descrição: Gerar lacre do sistema
+Auth: admin
+Path: electionId (int)
+Response: SystemSeal
+
+GET /api/systemseal/latest/{electionId}
+Descrição: Último lacre do sistema
+Auth: admin
+Path: electionId (int)
+Response: SystemSeal
+
+POST /api/systemseal/verify/{electionId}
+Descrição: Verificar lacre do sistema
+Auth: admin
+Path: electionId (int)
+Body: { "providedSealHash": "hash_aqui" }
+Response: SystemSealVerificationDto
+
+4.14 VOTING TEST CONTROLLER - /api/voting-test
+===============================================================================
+
+GET /api/voting-test/election/{electionId}/multiple-positions
+Descrição: Testar detecção de múltiplos cargos
+Auth: admin
+Path: electionId (int)
+Response: {
+  "success": true,
+  "data": {
+    "electionId": 1,
+    "electionTitle": "Eleição Teste",
+    "hasMultiplePositions": true,
+    "message": "Esta eleição possui múltiplos cargos - votação múltipla será obrigatória",
+    "requiredVotingMethod": "cast-multiple-votes"
+  }
+}
+Observações:
+- Testa se a eleição possui múltiplos cargos
+- Indica qual método de votação deve ser usado
+- Endpoint para validação e debugging
+
+POST /api/voting-test/election/{electionId}/validate-votes
+Descrição: Testar validação de votos para múltiplos cargos
+Auth: admin
+Path: electionId (int)
+Body: [
+  {
+    "positionId": 1,
+    "candidateId": 5,
+    "isBlankVote": false,
+    "isNullVote": false
+  },
+  {
+    "positionId": 2,
+    "candidateId": null,
+    "isBlankVote": true,
+    "isNullVote": false
+  }
+]
+Response: {
+  "success": true,
+  "data": {
+    "electionId": 1,
+    "electionTitle": "Eleição Teste",
+    "positionsProvided": 2,
+    "validationResult": "VÁLIDO",
+    "validationMessage": "Validação bem-sucedida",
+    "providedVotes": [...]
+  }
+}
+Observações:
+- Valida se todos os cargos da eleição estão sendo votados
+- Verifica duplicatas e cargos faltantes
+- Endpoint para testes de validação
+
+GET /api/voting-test/election/{electionId}/counting-report
+Descrição: Testar geração de relatório de contabilização
+Auth: admin
+Path: electionId (int)
+Response: ElectionCountingReportDto
+Observações:
+- Gera relatório de contabilização para testes
+- Mostra resultados por cargo e candidato
+- Inclui percentuais e estatísticas
+- Preserva privacidade dos eleitores
+
+GET /api/voting-test/election/{electionId}/system-integrity
+Descrição: Teste completo de integridade do sistema
+Auth: admin
+Path: electionId (int)
+Response: {
+  "success": true,
+  "data": {
+    "electionId": 1,
+    "electionTitle": "Eleição Teste",
+    "systemIntegrityTests": {
+      "multiplePositionsDetection": {...},
+      "electionValidation": {...},
+      "integrityValidation": {...}
+    },
+    "overallStatus": "PASSED",
+    "testedAt": "2025-08-22T10:30:00Z"
+  }
+}
+Observações:
+- Executa bateria completa de testes
+- Valida detecção de múltiplos cargos
+- Testa validação de eleição
+- Verifica integridade do sistema
+- Retorna status geral dos testes
+
+===============================================================================
+5. MODELOS DE DADOS PRINCIPAIS (DTOs)
+===============================================================================
+
+5.1 LOGIN DTO
+{
+  "email": "string (required, email format)",
+  "password": "string (required)"
+}
+
+5.2 ELECTION DTOs
+
+CreateElectionDto:
+{
+  "title": "string (required, max 255)",
+  "description": "string (optional)",
+  "electionType": "string (max 50, default: internal)",
+  "startDate": "datetime (required)",
+  "endDate": "datetime (required)",
+  "timezone": "string (max 100, default: America/Sao_Paulo)",
+  "allowBlankVotes": "boolean (default: false)",
+  "allowNullVotes": "boolean (default: false)",
+  "requireJustification": "boolean (default: false)",
+  "maxVotesPerVoter": "int (default: 1)",
+  "votingMethod": "string (max 20, default: single_choice)",
+  "resultsVisibility": "string (max 20, default: after_election)",
+  "companyId": "int (required)"
+}
+
+ElectionResponseDto:
+{
+  "id": "int",
+  "title": "string",
+  "description": "string",
+  "electionType": "string",
+  "status": "string",
+  "startDate": "datetime",
+  "endDate": "datetime",
+  "timezone": "string",
+  "allowBlankVotes": "boolean",
+  "allowNullVotes": "boolean",
+  "requireJustification": "boolean",
+  "maxVotesPerVoter": "int",
+  "votingMethod": "string",
+  "resultsVisibility": "string",
+  "createdBy": "int",
+  "updatedBy": "int",
+  "createdAt": "datetime",
+  "updatedAt": "datetime",
+  "companyId": "int",
+  "companyName": "string",
+  "companyCnpj": "string"
+}
+
+5.3 CANDIDATE DTOs
+
+CreateCandidateDto:
+{
+  "name": "string (required, max 100)",
+  "number": "string (max 20)",
+  "description": "string",
+  "biography": "string",
+  "photoUrl": "string (url format, max 255)",
+  "orderPosition": "int (range 1-100, default: 1)",
+  "positionId": "int (required)"
+}
+
+CandidateResponseDto:
+{
+  "id": "int",
+  "name": "string",
+  "number": "string",
+  "description": "string",
+  "biography": "string",
+  "photoUrl": "string",
+  "hasPhoto": "boolean",
+  "hasPhotoFile": "boolean",
+  "hasPhotoBlob": "boolean",
+  "photoStorageType": "string",
+  "photoMimeType": "string",
+  "photoFileName": "string",
+  "orderPosition": "int",
+  "isActive": "boolean",
+  "positionId": "int",
+  "positionTitle": "string",
+  "votesCount": "int",
+  "createdAt": "datetime",
+  "updatedAt": "datetime"
+}
+
+5.4 VOTING DTOs
+
+VotingLoginDto:
+{
+  "cpf": "string (required, max 14)",
+  "password": "string (required, max 100)",
+  "electionId": "int (required)"
+}
+
+VotingCastVoteDto:
+{
+  "electionId": "int (required)",
+  "positionId": "int (required)",
+  "candidateId": "int (nullable)",
+  "isBlankVote": "boolean (default: false)",
+  "isNullVote": "boolean (default: false)",
+  "justification": "string (optional)"
+}
+
+VotingCastMultipleVotesDto:
+{
+  "electionId": "int (required)",
+  "votes": "VoteForPositionDto[] (required, min 1 item)",
+  "justification": "string (optional)"
+}
+
+VoteForPositionDto:
+{
+  "positionId": "int (required)",
+  "candidateId": "int (nullable)",
+  "isBlankVote": "boolean (default: false)",
+  "isNullVote": "boolean (default: false)"
+}
+
+VoteReceiptDto:
+{
+  "receiptToken": "string",
+  "voteHash": "string",
+  "votedAt": "datetime",
+  "electionId": "int",
+  "electionTitle": "string",
+  "voteDetails": "List<VoteDetailDto>",
+  "voterName": "string",
+  "voterCpf": "string"
+}
+
+5.5 COMPANY DTOs
+
+CompanyCreateDto:
+{
+  "name": "string (required)",
+  "cnpj": "string (required)",
+  "email": "string (email format)",
+  "phone": "string",
+  "address": "string",
+  "city": "string",
+  "state": "string",
+  "zipCode": "string",
+  "isActive": "boolean (default: true)"
+}
+
+5.6 ADMIN DTOs
+
+CreateAdminDto:
+{
+  "name": "string (required, max 100)",
+  "email": "string (required, email format, max 255)",
+  "password": "string (required, max 128)",
+  "role": "string (max 50, default: admin)",
+  "permissions": "string (optional)",
+  "isActive": "boolean (default: true)",
+  "isSuper": "boolean (default: false)"
+}
+
+UpdateAdminDto:
+{
+  "name": "string (optional, max 100)",
+  "email": "string (optional, email format, max 255)",
+  "password": "string (optional, max 128)",
+  "role": "string (optional, max 50)",
+  "permissions": "string (optional)",
+  "isActive": "boolean (optional)",
+  "isSuper": "boolean (optional)"
+}
+
+AdminResponseDto:
+{
+  "id": "int",
+  "name": "string",
+  "email": "string",
+  "role": "string",
+  "permissions": "string",
+  "isActive": "boolean",
+  "isSuper": "boolean",
+  "isMaster": "boolean",
+  "lastLoginAt": "datetime",
+  "createdAt": "datetime",
+  "updatedAt": "datetime"
+}
+
+5.7 EMAIL DTOs
+
+SendEmailDto:
+{
+  "toEmail": "string (required, email format)",
+  "toName": "string",
+  "subject": "string (required)",
+  "body": "string (required)",
+  "isHtml": "boolean (default: false)"
+}
+
+BulkEmailDto:
+{
+  "subject": "string (required)",
+  "body": "string (required)",
+  "recipients": "string[] (required)",
+  "isHtml": "boolean (default: false)"
+}
+
+5.8 REPORT DTOs
+
+ElectionCountingReportDto:
+{
+  "electionId": "int",
+  "electionTitle": "string",
+  "generatedAt": "datetime",
+  "generatedBy": "string",
+  "reportHash": "string",
+  "systemSealHash": "string",
+  "totalVoters": "int",
+  "totalVotes": "int",
+  "positions": "List<CountingPositionDto>"
+}
+
+CountingPositionDto:
+{
+  "positionName": "string",
+  "totalVotes": "int",
+  "blankVotes": "int",
+  "nullVotes": "int",
+  "candidates": "List<CountingCandidateDto>"
+}
+
+CountingCandidateDto:
+{
+  "candidateName": "string",
+  "candidateNumber": "string",
+  "voteCount": "int",
+  "percentage": "decimal"
+}
+
+ElectionValidationDto:
+{
+  "status": "string",
+  "isSealed": "boolean",
+  "startDate": "datetime",
+  "endDate": "datetime",
+  "isInVotingPeriod": "boolean",
+  "isActive": "boolean",
+  "isValid": "boolean",
+  "validationMessage": "string",
+  "validationErrors": "List<string>"
+}
+
+===============================================================================
+6. CÓDIGOS DE STATUS HTTP
+===============================================================================
+
+200 OK - Operação realizada com sucesso
+201 Created - Recurso criado com sucesso
+400 Bad Request - Dados de entrada inválidos
+401 Unauthorized - Token de autenticação inválido ou ausente
+403 Forbidden - Permissão negada para acessar o recurso
+404 Not Found - Recurso não encontrado
+409 Conflict - Conflito de dados (ex: email já existe)
+422 Unprocessable Entity - Dados válidos mas regra de negócio falhou
+500 Internal Server Error - Erro interno do servidor
+
+===============================================================================
+7. EXEMPLOS DE USO
+===============================================================================
+
+7.1 FLUXO DE LOGIN ADMIN:
+
+1. POST /api/auth/admin/login
+{
+  "email": "admin@sistema.com",
+  "password": "senha123"
+}
+
+Response:
+{
+  "success": true,
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "user": {
+      "id": 1,
+      "name": "Administrador",
+      "email": "admin@sistema.com",
+      "role": "admin"
+    },
+    "expiresIn": 3600
+  }
+}
+
+2. Usar o token em requests subsequentes:
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+7.2 FLUXO DE CRIAÇÃO DE ELEIÇÃO:
+
+1. POST /api/election
+Authorization: Bearer <token>
+{
+  "title": "Eleição Presidencial 2024",
+  "description": "Eleição para escolha do presidente",
+  "startDate": "2024-12-01T08:00:00",
+  "endDate": "2024-12-01T18:00:00",
+  "companyId": 1
+}
+
+2. POST /api/position
+{
+  "title": "Presidente",
+  "description": "Cargo de presidente",
+  "electionId": 1,
+  "maxVotesPerVoter": 1
+}
+
+3. POST /api/candidate
+{
+  "name": "João Silva",
+  "number": "10",
+  "positionId": 1
+}
+
+7.3 FLUXO DE VOTAÇÃO:
+
+1. POST /api/voting/login
+{
+  "cpf": "12345678901",
+  "password": "senha123",
+  "electionId": 1
+}
+
+2. GET /api/voting-portal/elections/1/candidates
+(Obter candidatos disponíveis)
+
+3. POST /api/voting/cast-vote
+Authorization: Bearer <voter_token>
+{
+  "electionId": 1,
+  "positionId": 1,
+  "candidateId": 5
+}
+
+Response:
+{
+  "success": true,
+  "data": {
+    "receiptToken": "abc123xyz",
+    "voteHash": "sha256_hash_do_voto",
+    "votedAt": "2024-12-01T10:30:00"
+  }
+}
+
+4. GET /api/voting/receipt/abc123xyz
+(Verificar comprovante de voto)
+
+7.3.1 FLUXO DE VOTAÇÃO MÚLTIPLA:
+
+1. POST /api/voting/login
+{
+  "cpf": "12345678901",
+  "password": "senha123",
+  "electionId": 1
+}
+
+2. GET /api/voting-portal/elections/1/candidates
+(Obter candidatos disponíveis)
+
+3. POST /api/voting/cast-multiple-votes
+Authorization: Bearer <voter_token>
+{
+  "electionId": 1,
+  "votes": [
+    {
+      "positionId": 1,
+      "candidateId": 5,
+      "isBlankVote": false,
+      "isNullVote": false
+    },
+    {
+      "positionId": 2,
+      "candidateId": 8,
+      "isBlankVote": false,
+      "isNullVote": false
+    },
+    {
+      "positionId": 3,
+      "candidateId": null,
+      "isBlankVote": true,
+      "isNullVote": false
+    }
+  ],
+  "justification": "Votação completa em todos os cargos"
+}
+
+Response:
+{
+  "success": true,
+  "data": {
+    "receiptToken": "xyz789abc",
+    "voteHash": "sha256_hash_dos_votos_multiplos",
+    "votedAt": "2024-12-01T10:30:00",
+    "voteDetails": [
+      {
+        "positionName": "Presidente",
+        "candidateName": "João Silva",
+        "candidateNumber": "10"
+      },
+      {
+        "positionName": "Vice-Presidente", 
+        "candidateName": "Maria Santos",
+        "candidateNumber": "20"
+      },
+      {
+        "positionName": "Secretário",
+        "candidateName": null,
+        "isBlankVote": true
+      }
+    ]
+  }
+}
+
+7.4 UPLOAD DE FOTO DE CANDIDATO:
+
+POST /api/candidate/1/upload-photo-blob
+Authorization: Bearer <admin_token>
+Content-Type: multipart/form-data
+
+Form Data:
+photo: [arquivo_da_foto.jpg]
+
+Response:
+{
+  "success": true,
+  "data": {
+    "message": "Photo uploaded and optimized successfully",
+    "fileName": "1_20241201_103000.jpg",
+    "mimeType": "image/jpeg",
+    "sizeBytes": 245760,
+    "storageType": "blob"
+  }
+}
+
+7.5 ENVIO DE RELATÓRIOS POR EMAIL:
+
+1. POST /api/election-reports/1/send-zero-report
+Authorization: Bearer <admin_token>
+
+Response:
+{
+  "success": true,
+  "data": {
+    "electionId": 1,
+    "electionTitle": "Eleição Presidencial 2024",
+    "emailsSent": 2,
+    "recipients": ["admin@sistema.com", "supervisor@sistema.com"],
+    "emailResult": true
+  },
+  "message": "Relatório zeresima enviado com sucesso por email"
+}
+
+2. POST /api/election-reports/1/send-final-report
+Authorization: Bearer <admin_token>
+
+Response:
+{
+  "success": true,
+  "data": {
+    "electionId": 1,
+    "electionTitle": "Eleição Presidencial 2024", 
+    "emailsSent": 2,
+    "recipients": ["admin@sistema.com", "supervisor@sistema.com"],
+    "emailResult": true
+  },
+  "message": "Relatório final enviado com sucesso por email"
+}
+
+7.6 TESTES DE VOTAÇÃO MÚLTIPLA:
+
+1. GET /api/voting-test/election/1/multiple-positions
+Authorization: Bearer <admin_token>
+
+Response:
+{
+  "success": true,
+  "data": {
+    "electionId": 1,
+    "electionTitle": "Eleição Presidencial 2024",
+    "hasMultiplePositions": true,
+    "message": "Esta eleição possui múltiplos cargos - votação múltipla será obrigatória",
+    "requiredVotingMethod": "cast-multiple-votes"
+  },
+  "message": "Teste de múltiplos cargos executado com sucesso"
+}
+
+2. POST /api/voting-test/election/1/validate-votes
+Authorization: Bearer <admin_token>
+{
+  [
+    {
+      "positionId": 1,
+      "candidateId": 5,
+      "isBlankVote": false,
+      "isNullVote": false
+    },
+    {
+      "positionId": 2,
+      "candidateId": null,
+      "isBlankVote": true,
+      "isNullVote": false
+    }
+  ]
+}
+
+Response:
+{
+  "success": true,
+  "data": {
+    "electionId": 1,
+    "electionTitle": "Eleição Presidencial 2024",
+    "positionsProvided": 2,
+    "validationResult": "VÁLIDO",
+    "validationMessage": "Validação bem-sucedida",
+    "providedVotes": [...]
+  },
+  "message": "Teste de validação de votos executado com sucesso"
+}
+
+3. GET /api/voting-test/election/1/system-integrity
+Authorization: Bearer <admin_token>
+
+Response:
+{
+  "success": true,
+  "data": {
+    "electionId": 1,
+    "electionTitle": "Eleição Presidencial 2024",
+    "systemIntegrityTests": {
+      "multiplePositionsDetection": {
+        "success": true,
+        "hasMultiplePositions": true,
+        "message": "Sistema detectou múltiplos cargos corretamente"
+      },
+      "electionValidation": {
+        "success": true,
+        "isValid": true,
+        "validationMessage": "Eleição válida para votação"
+      },
+      "integrityValidation": {
+        "success": true,
+        "integrityValid": true,
+        "message": "Integridade da eleição confirmada"
+      }
+    },
+    "overallStatus": "PASSED",
+    "testedAt": "2025-08-22T10:30:00Z"
+  },
+  "message": "Teste de integridade do sistema executado com sucesso"
+}
+
+===============================================================================
+OBSERVAÇÕES IMPORTANTES:
+===============================================================================
+
+1. TIMEZONE: Todas as datas são processadas considerando o timezone 
+   America/Sao_Paulo (BRT).
+
+2. PAGINAÇÃO: Endpoints que retornam listas suportam paginação com 
+   parâmetros page e limit.
+
+3. AUDITORIA: Todas as ações administrativas são registradas nos 
+   audit logs para rastreabilidade.
+
+4. INTEGRIDADE: O sistema possui lacres criptográficos para garantir 
+   a integridade das eleições.
+
+5. FOTOS: Candidatos podem ter fotos armazenadas como arquivos ou 
+   BLOBs no banco de dados.
+
+6. SEGURANÇA: Tokens JWT expiram em 1 hora para admins e 5 minutos 
+   para eleitores.
+
+7. VALIDAÇÕES: Todos os endpoints validam os dados de entrada e 
+   retornam erros detalhados.
+
+8. CORS: A API possui middleware de CORS configurado para permitir 
+   requisições de diferentes origens.
+
+9. SISTEMA DE LACRES: Eleições possuem dois estados principais:
+   - ABERTA (IsSealed = false): Permite alterações de dados, bloqueia votação
+   - SELADA (IsSealed = true): Bloqueia alterações, permite votação
+
+10. VOTAÇÃO MÚLTIPLA AUTOMÁTICA: O sistema detecta automaticamente eleições
+    com múltiplos cargos e força o uso de votação múltipla obrigatória.
+
+11. INTEGRIDADE DE DADOS: Todos os votos são processados em transação antes
+    da geração do comprovante, garantindo consistência de dados.
+
+12. RELATÓRIOS APRIMORADOS: Novos relatórios incluem hash de selamento e
+    preservam privacidade dos eleitores.
+
+===============================================================================
+FIM DA DOCUMENTAÇÃO
+Data de Geração: 2025-08-25
+Versão da API: 1.6.0
+
+CHANGELOG v1.6.0:
+- NOVO AdminManagementController completo: Gerenciamento de administradores com CRUD completo
+- Novos endpoints de administração:
+  * GET /api/adminmanagement - Lista administradores com paginação
+  * GET /api/adminmanagement/{id} - Obter admin por ID  
+  * POST /api/adminmanagement - Criar novo administrador
+  * PUT /api/adminmanagement/{id} - Atualizar administrador
+  * DELETE /api/adminmanagement/{id} - Desativar administrador (soft delete)
+  * POST /api/adminmanagement/{id}/reactivate - Reativar administrador
+- NOVOS DTOs: CreateAdminDto, UpdateAdminDto, AdminResponseDto
+- Sistema de auditoria integrado para todas as operações de administração
+- Proteção contra modificação/desativação de usuários master
+- Validação de emails únicos e permissões de acesso
+- AuthController aprimorado com sistema de auditoria completo
+- Logs detalhados de tentativas de login, falhas e sucessos
+- Verificação de contas inativas com logs de segurança
+- Melhor tratamento de erros e respostas padronizadas
+- Sistema de logs de auditoria para rastreabilidade completa
+- Proteções de segurança para operações administrativas críticas
+- Atualização da documentação com novos endpoints e DTOs
+- Validações aprimoradas de entrada de dados
+- Middleware de CORS configurado para compatibilidade com frontends
+
+CHANGELOG v1.5.0:
+- VOTAÇÃO MÚLTIPLA AUTOMÁTICA: Sistema detecta automaticamente eleições com múltiplos cargos
+- Endpoint cast-vote agora força uso de cast-multiple-votes quando há múltiplos cargos
+- Validação obrigatória de todos os cargos em eleições com múltiplas posições
+- Processamento transacional de votos antes da geração do comprovante
+- Novo VotingTestController com endpoints de teste e validação:
+  * GET /api/voting-test/election/{id}/multiple-positions - Testa detecção de múltiplos cargos
+  * POST /api/voting-test/election/{id}/validate-votes - Testa validação de votos
+  * GET /api/voting-test/election/{id}/counting-report - Testa relatório de contabilização
+  * GET /api/voting-test/election/{id}/system-integrity - Teste completo de integridade
+- Novo relatório de contabilização (ElectionCountingReportDto) com dados por cargo/candidato
+- Relatórios aprimorados com hash de selamento do sistema
+- Zerésima atualizada para mostrar contabilização por cargo preservando privacidade
+- Novos DTOs: ElectionCountingReportDto, CountingPositionDto, CountingCandidateDto
+- Melhorias na documentação com exemplos de testes de votação múltipla
+
+CHANGELOG v1.4.1:
+- Adicionado ElectionReportController com endpoints para envio de relatórios por email
+- POST /api/election-reports/{electionId}/send-zero-report - Envia relatório zeresima por email
+- POST /api/election-reports/{electionId}/send-final-report - Envia relatório final por email
+- Templates HTML profissionais para emails de relatórios com CSS responsivo
+- Integração com sistema de email existente (BulkEmailDto)
+- Validações de status da eleição e verificação de administradores ativos
+- Auditoria completa de todas as ações de envio de relatórios
+- Corrigida lógica de validação de votação: eleições lacradas (IsSealed = true) agora permitem votação
+- Corrigida validação no VotingPortalController para consistência com regras de negócio
+- Aprimorado tratamento de erros no VoterController.ResetPassword
+- Validações ajustadas para garantir que apenas eleições lacradas aceitem votos
+- Correção na lógica de validação do portal de votação
+- Implementados logs de debugging detalhados para rastreamento de notificações por email
+- Melhorada rastreabilidade de administradores e envio de emails em massa
+- Aprimorado sistema de logs para identificação de problemas de entrega de email
+- ATUALIZAÇÃO: Zero report agora permite eleições seladas sem restrição de tempo
+- Eleições seladas podem gerar zero report a qualquer momento
+- Eleições não seladas mantêm regra de 1 minuto antes do início (ajustado para testes)
+- Corrigido ElectionReportController para aceitar status "sealed" além de "active" e "scheduled"
+
+CHANGELOG v1.4.0:
+- Adicionado endpoint POST /api/voting/cast-multiple-votes para votação múltipla
+- Criado DTO VotingCastMultipleVotesDto e VoteForPositionDto
+- Permite votar em múltiplas posições simultaneamente
+- Adicionado fluxo de exemplo de votação múltipla
+- Endpoint cast-vote mantido para compatibilidade (voto simples)
+
+CHANGELOG v1.3.1:
+- Corrigida lógica de votação para aceitar eleições lacradas (IsSealed = true)
+- Eleições não lacradas permitem alterações mas bloqueiam votação
+- Eleições lacradas bloqueiam alterações mas permitem votação
+- Adicionadas observações sobre sistema de lacres nos endpoints de votação
+- Melhorias na documentação dos fluxos de votação
+
+CHANGELOG v1.3.0:
+- Adicionado campo "status" ao modelo Election
+- Endpoint PATCH /api/election/{id}/status agora funciona corretamente
+- Status válidos: draft, active, completed, cancelled
+- Status "completed" automaticamente sela a eleição
+- Correção do endpoint de posições para campos nullable
+===============================================================================

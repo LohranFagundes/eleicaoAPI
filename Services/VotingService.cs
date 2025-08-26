@@ -24,6 +24,7 @@ public class VotingService : IVotingService
     private readonly IAuthService _authService;
     private readonly ILogger<VotingService> _logger;
     private readonly IDateTimeService _dateTimeService;
+    private readonly ElectionDbContext _context;
 
     public VotingService(
         IRepository<Voter> voterRepository,
@@ -39,7 +40,8 @@ public class VotingService : IVotingService
         IAuditService auditService,
         IAuthService authService,
         ILogger<VotingService> logger,
-        IDateTimeService dateTimeService)
+        IDateTimeService dateTimeService,
+        ElectionDbContext context)
     {
         _voterRepository = voterRepository;
         _electionRepository = electionRepository;
@@ -55,6 +57,7 @@ public class VotingService : IVotingService
         _authService = authService;
         _logger = logger;
         _dateTimeService = dateTimeService;
+        _context = context;
     }
 
     public async Task<ApiResponse<object>> LoginVoterAsync(VotingLoginDto loginDto, string ipAddress, string userAgent)
@@ -191,9 +194,9 @@ public class VotingService : IVotingService
                 .Include(e => e.Positions)
                 .FirstOrDefaultAsync(e => e.Id == voteDto.ElectionId);
 
-            if (election.IsSealed)
+            if (!election.IsSealed)
             {
-                return ApiResponse<VoteReceiptDto>.ErrorResult("Eleição está lacrada e não pode receber votos");
+                return ApiResponse<VoteReceiptDto>.ErrorResult("Eleição deve estar lacrada para receber votos");
             }
 
             var position = await _positionRepository.GetByIdAsync(voteDto.PositionId);
@@ -277,6 +280,168 @@ public class VotingService : IVotingService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error casting vote for voter {VoterId}", voterId);
+            return ApiResponse<VoteReceiptDto>.ErrorResult("Erro interno do servidor");
+        }
+    }
+
+    public async Task<ApiResponse<VoteReceiptDto>> CastMultipleVotesAsync(VotingCastMultipleVotesDto voteDto, int voterId, string ipAddress, string userAgent)
+    {
+        try
+        {
+            // Validate election and voting permissions
+            var canVoteResult = await CanVoteInElectionAsync(voterId, voteDto.ElectionId);
+            if (!canVoteResult.Success || !canVoteResult.Data)
+            {
+                return ApiResponse<VoteReceiptDto>.ErrorResult(canVoteResult.Message);
+            }
+
+            var hasVotedResult = await HasVoterVotedAsync(voterId, voteDto.ElectionId);
+            if (hasVotedResult.Data)
+            {
+                return ApiResponse<VoteReceiptDto>.ErrorResult("Você já votou nesta eleição");
+            }
+
+            var election = await _electionRepository.GetQueryable()
+                .Include(e => e.Positions)
+                .ThenInclude(p => p.Candidates)
+                .FirstOrDefaultAsync(e => e.Id == voteDto.ElectionId);
+
+            if (!election.IsSealed)
+            {
+                return ApiResponse<VoteReceiptDto>.ErrorResult("Eleição deve estar lacrada para receber votos");
+            }
+
+            var voter = await _voterRepository.GetByIdAsync(voterId);
+
+            // Validate all positions belong to the election
+            var positionIds = voteDto.Votes.Select(v => v.PositionId).Distinct().ToList();
+            var validPositions = await _positionRepository.GetQueryable()
+                .Where(p => positionIds.Contains(p.Id) && p.ElectionId == voteDto.ElectionId)
+                .Include(p => p.Candidates)
+                .ToListAsync();
+
+            if (validPositions.Count != positionIds.Count)
+            {
+                return ApiResponse<VoteReceiptDto>.ErrorResult("Um ou mais cargos são inválidos para esta eleição");
+            }
+
+            // Validate candidates
+            foreach (var vote in voteDto.Votes)
+            {
+                if (vote.CandidateId.HasValue && !vote.IsBlankVote && !vote.IsNullVote)
+                {
+                    var position = validPositions.First(p => p.Id == vote.PositionId);
+                    var candidate = position.Candidates.FirstOrDefault(c => c.Id == vote.CandidateId.Value);
+                    if (candidate == null || !candidate.IsActive)
+                    {
+                        return ApiResponse<VoteReceiptDto>.ErrorResult($"Candidato inválido para o cargo: {position.Title}");
+                    }
+                }
+            }
+
+            // Create multiple secure votes
+            var voteId = Guid.NewGuid().ToString("N").ToUpper();
+            var votedAt = DateTime.UtcNow;
+            var secureVotes = new List<SecureVote>();
+            var voteDetails = new List<VoteDetailDto>();
+
+            foreach (var vote in voteDto.Votes)
+            {
+                var position = validPositions.First(p => p.Id == vote.PositionId);
+                Candidate? candidate = null;
+
+                if (vote.CandidateId.HasValue && !vote.IsBlankVote && !vote.IsNullVote)
+                {
+                    candidate = position.Candidates.First(c => c.Id == vote.CandidateId.Value);
+                }
+
+                // Prepare encryption data for this vote
+                var voteEncryptionData = new VoteEncryptionData
+                {
+                    CandidateId = vote.CandidateId,
+                    CandidateName = candidate?.Name,
+                    CandidateNumber = candidate?.Number,
+                    IsBlankVote = vote.IsBlankVote,
+                    IsNullVote = vote.IsNullVote,
+                    EncryptedAt = votedAt,
+                    VoteId = voteId
+                };
+
+                // Encrypt vote data
+                var encryptedVoteData = await _cryptographyService.EncryptVoteDataAsync(voteEncryptionData, election.SealHash!);
+                var voteHash = _cryptographyService.GenerateVoteHash(voteId, voterId, vote.CandidateId ?? 0, votedAt);
+                var voteSignature = _cryptographyService.GenerateVoteSignature(voteHash, encryptedVoteData);
+                var creationHash = _cryptographyService.GenerateCreationHash(voteId, voterId, voteDto.ElectionId, votedAt);
+                var deviceFingerprint = _cryptographyService.GenerateDeviceFingerprint(userAgent, ipAddress);
+                var encryptedJustification = await _cryptographyService.EncryptJustificationAsync(voteDto.Justification);
+
+                var secureVote = new SecureVote
+                {
+                    VoteId = voteId,
+                    VoteType = GetVoteType(vote.IsBlankVote, vote.IsNullVote, vote.CandidateId.HasValue),
+                    EncryptedVoteData = encryptedVoteData,
+                    VoteHash = voteHash,
+                    VoteSignature = voteSignature,
+                    VoteWeight = voter.VoteWeight,
+                    VotedAt = votedAt,
+                    IpAddress = ipAddress,
+                    UserAgent = userAgent,
+                    DeviceFingerprint = deviceFingerprint,
+                    VoterId = voterId,
+                    ElectionId = voteDto.ElectionId,
+                    PositionId = vote.PositionId,
+                    IsBlankVote = vote.IsBlankVote,
+                    IsNullVote = vote.IsNullVote,
+                    EncryptedJustification = encryptedJustification,
+                    CreationHash = creationHash,
+                    CreatedAt = votedAt,
+                    ElectionSealHash = election.SealHash!
+                };
+
+                secureVotes.Add(secureVote);
+
+                voteDetails.Add(new VoteDetailDto
+                {
+                    PositionName = position.Title,
+                    CandidateName = candidate?.Name,
+                    CandidateNumber = candidate?.Number,
+                    IsBlankVote = vote.IsBlankVote,
+                    IsNullVote = vote.IsNullVote
+                });
+            }
+
+            // Save all votes in a transaction-like operation
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                foreach (var secureVote in secureVotes)
+                {
+                    await _secureVoteRepository.CreateVoteAsync(secureVote);
+                }
+                
+                // Commit all votes before generating receipt
+                await transaction.CommitAsync();
+                
+                // Only generate receipt after all votes are successfully saved
+                var receipt = await GenerateMultipleVotesReceiptAsync(voteId, voter, election, voteDetails, votedAt, ipAddress, userAgent);
+                
+                await _auditService.LogAsync(voterId, "voter", "cast_multiple_votes", "secure_vote", null,
+                    $"Multiple votes cast in election {election.Title} for {voteDto.Votes.Count} positions - all votes processed before receipt generation");
+
+                _logger.LogInformation("Multiple votes cast successfully. Voter: {VoterId}, Election: {ElectionId}, VoteId: {VoteId}, Positions: {PositionCount}",
+                    voterId, voteDto.ElectionId, voteId, voteDto.Votes.Count);
+
+                return ApiResponse<VoteReceiptDto>.SuccessResult(receipt, "Votos registrados com sucesso");
+            }
+            catch (Exception)
+            {
+                await transaction.RollbackAsync();
+                throw;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error casting multiple votes for voter {VoterId}", voterId);
             return ApiResponse<VoteReceiptDto>.ErrorResult("Erro interno do servidor");
         }
     }
@@ -400,13 +565,18 @@ public class VotingService : IVotingService
                 return ApiResponse<ZeroReportDto>.ErrorResult("Eleição não encontrada");
             }
 
-            // Check if it's within 10 minutes before election start
-            var now = DateTime.UtcNow;
-            var timeUntilStart = election.StartDate - now;
-            if (timeUntilStart.TotalMinutes > 10 || timeUntilStart.TotalMinutes < 0)
+            // Check election status - allow for sealed elections too
+            if (!election.IsSealed)
             {
-                return ApiResponse<ZeroReportDto>.ErrorResult("Relatório de zeresima só pode ser gerado até 10 minutos antes do início da eleição");
+                // For unsealed elections, check timing constraint
+                var now = DateTime.UtcNow;
+                var timeUntilStart = election.StartDate - now;
+                if (timeUntilStart.TotalMinutes > 1 || timeUntilStart.TotalMinutes < 0)
+                {
+                    return ApiResponse<ZeroReportDto>.ErrorResult("Relatório de zeresima só pode ser gerado até 1 minuto antes do início da eleição");
+                }
             }
+            // For sealed elections, allow zero report generation without timing restrictions
 
             // Check if already exists
             var existingReport = await _zeroReportRepository.GetQueryable()
@@ -425,28 +595,44 @@ public class VotingService : IVotingService
                 .Where(v => v.ElectionId == electionId)
                 .CountAsync();
 
+            var reportGeneratedAt = DateTime.UtcNow;
+            var admin = await _voterRepository.GetByIdAsync(adminId);
+            
+            // Para zerésima, mostrar contabilização inicial (zero votos) por cargo
+            var positions = new List<ZeroReportPositionDto>();
+            foreach (var position in election.Positions)
+            {
+                var candidates = new List<ZeroReportCandidateDto>();
+                foreach (var candidate in position.Candidates.Where(c => c.IsActive))
+                {
+                    candidates.Add(new ZeroReportCandidateDto
+                    {
+                        CandidateName = candidate.Name,
+                        CandidateNumber = candidate.Number,
+                        VoteCount = 0 // Zerésima sempre mostra 0 votos
+                    });
+                }
+                
+                positions.Add(new ZeroReportPositionDto
+                {
+                    PositionName = position.Title,
+                    TotalCandidates = candidates.Count,
+                    TotalVotes = 0, // Zerésima sempre mostra 0 votos totais
+                    Candidates = candidates.OrderBy(c => c.CandidateNumber).ToList()
+                });
+            }
+
             var report = new ZeroReportDto
             {
                 ElectionId = election.Id,
                 ElectionTitle = election.Title,
-                GeneratedAt = now,
-                GeneratedBy = "Admin", // You might want to get admin name
+                GeneratedAt = reportGeneratedAt,
+                GeneratedBy = admin?.Name ?? "Administrador",
                 TotalRegisteredVoters = totalVoters,
-                TotalCandidates = election.Positions.Sum(p => p.Candidates.Count),
+                TotalCandidates = election.Positions.Sum(p => p.Candidates.Count(c => c.IsActive)),
                 TotalPositions = election.Positions.Count,
-                TotalVotes = totalVotes,
-                Positions = election.Positions.Select(p => new ZeroReportPositionDto
-                {
-                    PositionName = p.Title,
-                    TotalCandidates = p.Candidates.Count,
-                    TotalVotes = 0, // Should be 0 for zero report
-                    Candidates = p.Candidates.Select(c => new ZeroReportCandidateDto
-                    {
-                        CandidateName = c.Name,
-                        CandidateNumber = c.Number,
-                        VoteCount = 0 // Should be 0 for zero report
-                    }).ToList()
-                }).ToList()
+                TotalVotes = 0, // Zerésima sempre mostra 0 votos
+                Positions = positions
             };
 
             var reportJson = JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true });
@@ -455,7 +641,7 @@ public class VotingService : IVotingService
             var zeroReport = new ZeroReport
             {
                 ElectionId = electionId,
-                GeneratedAt = now,
+                GeneratedAt = reportGeneratedAt,
                 GeneratedBy = adminId,
                 ReportData = reportJson,
                 ReportHash = reportHash,
@@ -631,6 +817,41 @@ public class VotingService : IVotingService
         return receipt;
     }
 
+    private async Task<VoteReceiptDto> GenerateMultipleVotesReceiptAsync(string voteId, Voter voter, Election election, List<VoteDetailDto> voteDetails, DateTime votedAt, string ipAddress, string userAgent)
+    {
+        var receiptToken = Guid.NewGuid().ToString("N").ToUpper();
+        var receiptHash = GenerateReceiptHash(voteId, receiptToken, votedAt);
+
+        var receipt = new VoteReceiptDto
+        {
+            ReceiptToken = receiptToken,
+            VoteHash = receiptHash,
+            VotedAt = votedAt,
+            ElectionId = election.Id,
+            ElectionTitle = election.Title,
+            VoterName = voter.Name,
+            VoterCpf = MaskCpf(voter.Cpf),
+            VoteDetails = voteDetails
+        };
+
+        // Store receipt in database
+        var voteReceipt = new VoteReceipt
+        {
+            VoterId = voter.Id,
+            ElectionId = election.Id,
+            ReceiptToken = receiptToken,
+            VoteHash = receiptHash,
+            VotedAt = votedAt,
+            IpAddress = ipAddress,
+            UserAgent = userAgent,
+            VoteData = JsonSerializer.Serialize(receipt)
+        };
+
+        await _receiptRepository.AddAsync(voteReceipt);
+
+        return receipt;
+    }
+
     private async Task<string> GenerateSystemDataAsync(int electionId)
     {
         var election = await _electionRepository.GetQueryable()
@@ -684,6 +905,13 @@ public class VotingService : IVotingService
         return "candidate";
     }
 
+    private string GetVoteType(bool isBlankVote, bool isNullVote, bool hasCandidateId)
+    {
+        if (isBlankVote) return "blank";
+        if (isNullVote) return "null";
+        return "candidate";
+    }
+
     private string GetElectionStatusMessage(Election election, bool canVote, bool hasVoted)
     {
         if (hasVoted) return "Você já votou nesta eleição";
@@ -720,18 +948,12 @@ public class VotingService : IVotingService
             validation.StartDate = election.StartDate;
             validation.EndDate = election.EndDate;
             validation.IsInVotingPeriod = currentTime >= startDateUtc && currentTime <= endDateUtc;
-            validation.IsActive = !election.IsSealed;
+            validation.IsActive = election.IsSealed;
 
-            // Regra 1: Eleição deve estar lacrada (sealed)
+            // Regra 1: Eleição deve estar lacrada (sealed) para receber votos
             if (!election.IsSealed)
             {
                 errors.Add("Election must be sealed before voting can begin");
-            }
-
-            // Regra 2: Eleição deve estar ativa
-            if (election.IsSealed)
-            {
-                errors.Add("Election is sealed and cannot accept votes");
             }
 
             // Regra 3: Deve estar dentro do período de votação
@@ -761,6 +983,160 @@ public class VotingService : IVotingService
             await _auditService.LogAsync(null, "system", "validate_election_error", 
                 "voting_service", electionId, $"Error validating election: {ex.Message}");
             return ApiResponse<ElectionValidationDto>.ErrorResult("Internal server error while validating election");
+        }
+    }
+
+    public async Task<ApiResponse<bool>> HasMultiplePositionsAsync(int electionId)
+    {
+        try
+        {
+            var positionCount = await _positionRepository.GetQueryable()
+                .Where(p => p.ElectionId == electionId)
+                .CountAsync();
+            
+            return ApiResponse<bool>.SuccessResult(positionCount > 1);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error checking multiple positions for election {ElectionId}", electionId);
+            return ApiResponse<bool>.ErrorResult("Erro interno do servidor");
+        }
+    }
+
+    public async Task<ApiResponse<object>> ValidateAllPositionsVotedAsync(int electionId, List<VoteForPositionDto> votes)
+    {
+        try
+        {
+            var allPositions = await _positionRepository.GetQueryable()
+                .Where(p => p.ElectionId == electionId)
+                .Select(p => p.Id)
+                .ToListAsync();
+
+            var votedPositions = votes.Select(v => v.PositionId).Distinct().ToList();
+
+            var missingPositions = allPositions.Except(votedPositions).ToList();
+            
+            if (missingPositions.Any())
+            {
+                var missingPositionNames = await _positionRepository.GetQueryable()
+                    .Where(p => missingPositions.Contains(p.Id))
+                    .Select(p => p.Title)
+                    .ToListAsync();
+                
+                return ApiResponse<object>.ErrorResult($"Votação obrigatória em todos os cargos. Cargos faltantes: {string.Join(", ", missingPositionNames)}");
+            }
+
+            var duplicatePositions = votedPositions.GroupBy(x => x).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
+            if (duplicatePositions.Any())
+            {
+                return ApiResponse<object>.ErrorResult("Não é possível votar mais de uma vez no mesmo cargo");
+            }
+
+            return ApiResponse<object>.SuccessResult(null, "Validação bem-sucedida");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error validating all positions voted for election {ElectionId}", electionId);
+            return ApiResponse<object>.ErrorResult("Erro interno do servidor");
+        }
+    }
+
+    public async Task<ApiResponse<ElectionCountingReportDto>> GenerateElectionCountingReportAsync(int electionId, int adminId, string ipAddress)
+    {
+        try
+        {
+            var election = await _electionRepository.GetQueryable()
+                .Include(e => e.Positions)
+                    .ThenInclude(p => p.Candidates)
+                .FirstOrDefaultAsync(e => e.Id == electionId);
+
+            if (election == null)
+            {
+                return ApiResponse<ElectionCountingReportDto>.ErrorResult("Eleição não encontrada");
+            }
+
+            if (!election.IsSealed)
+            {
+                return ApiResponse<ElectionCountingReportDto>.ErrorResult("Eleição deve estar lacrada para gerar relatório de contabilização");
+            }
+
+            var reportGeneratedAt = DateTime.UtcNow;
+            var positions = new List<CountingPositionDto>();
+
+            foreach (var position in election.Positions)
+            {
+                var positionVotes = await _context.SecureVotes
+                    .Where(sv => sv.ElectionId == electionId && sv.PositionId == position.Id)
+                    .ToListAsync();
+
+                var totalVotes = positionVotes.Count;
+                var blankVotes = positionVotes.Count(v => v.IsBlankVote);
+                var nullVotes = positionVotes.Count(v => v.IsNullVote);
+
+                var candidates = new List<CountingCandidateDto>();
+                
+                foreach (var candidate in position.Candidates.Where(c => c.IsActive))
+                {
+                    var candidateVotes = positionVotes.Count(v => !v.IsBlankVote && !v.IsNullVote && 
+                        v.EncryptedVoteData.Contains($"\"CandidateId\":{candidate.Id}"));
+                    
+                    var percentage = totalVotes > 0 ? (decimal)candidateVotes / totalVotes * 100 : 0;
+                    
+                    candidates.Add(new CountingCandidateDto
+                    {
+                        CandidateName = candidate.Name,
+                        CandidateNumber = candidate.Number,
+                        VoteCount = candidateVotes,
+                        Percentage = Math.Round(percentage, 2)
+                    });
+                }
+
+                positions.Add(new CountingPositionDto
+                {
+                    PositionName = position.Title,
+                    TotalVotes = totalVotes,
+                    BlankVotes = blankVotes,
+                    NullVotes = nullVotes,
+                    Candidates = candidates.OrderByDescending(c => c.VoteCount).ToList()
+                });
+            }
+
+            var totalVotersCount = await _voterRepository.GetQueryable()
+                .Where(v => v.IsActive)
+                .CountAsync();
+
+            var totalVotesCount = await _context.SecureVotes
+                .Where(sv => sv.ElectionId == electionId)
+                .Select(sv => sv.VoterId)
+                .Distinct()
+                .CountAsync();
+
+            var admin = await _voterRepository.GetByIdAsync(adminId);
+
+            var report = new ElectionCountingReportDto
+            {
+                ElectionId = election.Id,
+                ElectionTitle = election.Title,
+                GeneratedAt = reportGeneratedAt,
+                GeneratedBy = admin?.Name ?? "Administrador",
+                SystemSealHash = election.SealHash ?? "",
+                TotalVoters = totalVotersCount,
+                TotalVotes = totalVotesCount,
+                Positions = positions
+            };
+
+            var reportJson = JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true });
+            report.ReportHash = GenerateHash(reportJson);
+
+            await _auditService.LogAsync(adminId, "admin", "generate_counting_report", "election", electionId,
+                $"Counting report generated for election '{election.Title}'");
+
+            return ApiResponse<ElectionCountingReportDto>.SuccessResult(report);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error generating counting report for election {ElectionId}", electionId);
+            return ApiResponse<ElectionCountingReportDto>.ErrorResult("Erro interno do servidor");
         }
     }
 

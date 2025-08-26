@@ -37,15 +37,3 @@ public class VotingPortalElectionDto
     public List<VotingPortalPositionDto> Positions { get; set; } = new();
 }
 
-public class ElectionValidationDto
-{
-    public bool IsValid { get; set; }
-    public bool IsSealed { get; set; }
-    public bool IsActive { get; set; }
-    public bool IsInVotingPeriod { get; set; }
-    public string Status { get; set; } = string.Empty;
-    public DateTime StartDate { get; set; }
-    public DateTime EndDate { get; set; }
-    public string? ValidationMessage { get; set; }
-    public List<string> ValidationErrors { get; set; } = new();
-}

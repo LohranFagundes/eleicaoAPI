@@ -94,6 +94,14 @@ public class VotingController : ControllerBase
             var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
             var userAgent = HttpContext.Request.Headers["User-Agent"].ToString();
 
+            // Detectar automaticamente se há múltiplos cargos na eleição
+            var multiplePositionsResult = await _votingService.HasMultiplePositionsAsync(voteDto.ElectionId);
+            if (multiplePositionsResult.Success && multiplePositionsResult.Data)
+            {
+                // Se há múltiplos cargos, redirecionar para votação múltipla
+                return BadRequest(ApiResponse<object>.ErrorResult("Esta eleição possui múltiplos cargos. Use o endpoint de votação múltipla para votar em todos os cargos simultaneamente"));
+            }
+
             var result = await _votingService.CastVoteAsync(voteDto, voterId.Value, ipAddress, userAgent);
 
             if (result.Success)
@@ -108,6 +116,51 @@ public class VotingController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error casting vote");
+            return StatusCode(500, ApiResponse<object>.ErrorResult("Erro interno do servidor"));
+        }
+    }
+
+    [HttpPost("cast-multiple-votes")]
+    [Authorize(Roles = "voter")]
+    public async Task<IActionResult> CastMultipleVotes([FromBody] VotingCastMultipleVotesDto voteDto)
+    {
+        if (!ModelState.IsValid)
+        {
+            return BadRequest(ApiResponse<object>.ErrorResult("Dados dos votos inválidos", ModelState));
+        }
+
+        try
+        {
+            var voterId = GetCurrentVoterId();
+            if (!voterId.HasValue)
+            {
+                return Unauthorized(ApiResponse<object>.ErrorResult("Voter não autenticado"));
+            }
+
+            var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            var userAgent = HttpContext.Request.Headers["User-Agent"].ToString();
+
+            // Validar se todos os cargos da eleição estão sendo votados
+            var allPositionsResult = await _votingService.ValidateAllPositionsVotedAsync(voteDto.ElectionId, voteDto.Votes);
+            if (!allPositionsResult.Success)
+            {
+                return BadRequest(allPositionsResult);
+            }
+
+            var result = await _votingService.CastMultipleVotesAsync(voteDto, voterId.Value, ipAddress, userAgent);
+
+            if (result.Success)
+            {
+                return Ok(result);
+            }
+            else
+            {
+                return BadRequest(result);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error casting multiple votes");
             return StatusCode(500, ApiResponse<object>.ErrorResult("Erro interno do servidor"));
         }
     }

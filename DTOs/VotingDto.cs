@@ -33,6 +33,30 @@ public class VotingCastVoteDto
     public string? Justification { get; set; }
 }
 
+public class VotingCastMultipleVotesDto
+{
+    [Required]
+    public int ElectionId { get; set; }
+
+    [Required]
+    [MinLength(1, ErrorMessage = "Deve votar em pelo menos um cargo")]
+    public List<VoteForPositionDto> Votes { get; set; } = new();
+
+    public string? Justification { get; set; }
+}
+
+public class VoteForPositionDto
+{
+    [Required]
+    public int PositionId { get; set; }
+
+    public int? CandidateId { get; set; } // null for blank vote
+
+    public bool IsBlankVote { get; set; } = false;
+
+    public bool IsNullVote { get; set; } = false;
+}
+
 public class VoteReceiptDto
 {
     public string ReceiptToken { get; set; } = string.Empty;
@@ -143,4 +167,47 @@ public class IntegrityReportDto
     public DateTime ReportGeneratedAt { get; set; }
     public string Message { get; set; } = string.Empty;
     public List<string> ValidationDetails { get; set; } = new();
+}
+
+public class ElectionCountingReportDto
+{
+    public int ElectionId { get; set; }
+    public string ElectionTitle { get; set; } = string.Empty;
+    public DateTime GeneratedAt { get; set; }
+    public string GeneratedBy { get; set; } = string.Empty;
+    public string ReportHash { get; set; } = string.Empty;
+    public string SystemSealHash { get; set; } = string.Empty;
+    public int TotalVoters { get; set; }
+    public int TotalVotes { get; set; }
+    public List<CountingPositionDto> Positions { get; set; } = new();
+}
+
+public class CountingPositionDto
+{
+    public string PositionName { get; set; } = string.Empty;
+    public int TotalVotes { get; set; }
+    public int BlankVotes { get; set; }
+    public int NullVotes { get; set; }
+    public List<CountingCandidateDto> Candidates { get; set; } = new();
+}
+
+public class CountingCandidateDto
+{
+    public string CandidateName { get; set; } = string.Empty;
+    public string CandidateNumber { get; set; } = string.Empty;
+    public int VoteCount { get; set; }
+    public decimal Percentage { get; set; }
+}
+
+public class ElectionValidationDto
+{
+    public string Status { get; set; } = string.Empty;
+    public bool IsSealed { get; set; }
+    public DateTime StartDate { get; set; }
+    public DateTime EndDate { get; set; }
+    public bool IsInVotingPeriod { get; set; }
+    public bool IsActive { get; set; }
+    public bool IsValid { get; set; }
+    public string ValidationMessage { get; set; } = string.Empty;
+    public List<string> ValidationErrors { get; set; } = new();
 }

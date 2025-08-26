@@ -329,8 +329,67 @@ public class VoterController : ControllerBase
         }
     }
 
+    [HttpPost("forgot-password")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordDto forgotPasswordDto)
+    {
+        if (!ModelState.IsValid)
+        {
+            return BadRequest(ApiResponse<object>.ErrorResult("Invalid input data", ModelState));
+        }
+
+        try
+        {
+            var result = await _voterService.RequestPasswordResetAsync(forgotPasswordDto.Email);
+            
+            // Always return success to prevent email enumeration attacks
+            return Ok(ApiResponse<PasswordResetRequestResponseDto>.SuccessResult(
+                new PasswordResetRequestResponseDto
+                {
+                    Success = true,
+                    Message = "Se o email existir em nossa base de dados, você receberá um link para redefinir sua senha.",
+                    TokenExpiry = DateTime.UtcNow.AddMinutes(30)
+                }));
+        }
+        catch (Exception)
+        {
+            return StatusCode(500, ApiResponse<object>.ErrorResult("Failed to process password reset request"));
+        }
+    }
+
+    [HttpPost("reset-password-with-token")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ResetPasswordWithToken([FromBody] ResetPasswordWithTokenDto resetDto)
+    {
+        if (!ModelState.IsValid)
+        {
+            return BadRequest(ApiResponse<object>.ErrorResult("Invalid input data", ModelState));
+        }
+
+        try
+        {
+            var result = await _voterService.ResetPasswordWithTokenAsync(resetDto.Token, resetDto.NewPassword);
+            
+            if (!result)
+            {
+                return BadRequest(ApiResponse<object>.ErrorResult("Token inválido ou expirado. Solicite um novo link de redefinição."));
+            }
+
+            return Ok(ApiResponse<object>.SuccessResult(null, "Senha redefinida com sucesso"));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ApiResponse<object>.ErrorResult(ex.Message));
+        }
+        catch (Exception)
+        {
+            return StatusCode(500, ApiResponse<object>.ErrorResult("Failed to reset password"));
+        }
+    }
+
     [HttpPost("reset-password")]
     [AllowAnonymous]
+    [Obsolete("Use forgot-password and reset-password-with-token instead")]
     public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordDto resetPasswordDto)
     {
         if (!ModelState.IsValid)
@@ -348,6 +407,10 @@ public class VoterController : ControllerBase
             }
 
             return Ok(ApiResponse<object>.SuccessResult(null, "Password reset successfully"));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ApiResponse<object>.ErrorResult(ex.Message));
         }
         catch (Exception)
         {

@@ -131,6 +131,9 @@ public class PositionService : IPositionService
         if (election == null)
             throw new ArgumentException("Election not found");
 
+        if (election.IsSealed)
+            throw new InvalidOperationException("Cannot add positions to sealed elections");
+
         var position = new Position
         {
             Title = createDto.Title,
@@ -155,8 +158,13 @@ public class PositionService : IPositionService
 
     public async Task<PositionResponseDto?> UpdatePositionAsync(int id, UpdatePositionDto updateDto, int updatedBy)
     {
-        var position = await _positionRepository.GetByIdAsync(id);
+        var position = await _positionRepository.GetQueryable()
+            .Include(p => p.Election)
+            .FirstOrDefaultAsync(p => p.Id == id);
         if (position == null) return null;
+
+        if (position.Election?.IsSealed == true)
+            throw new InvalidOperationException("Cannot modify positions in sealed elections");
 
         if (!string.IsNullOrEmpty(updateDto.Title))
             position.Title = updateDto.Title;
@@ -192,8 +200,13 @@ public class PositionService : IPositionService
 
     public async Task<bool> DeletePositionAsync(int id)
     {
-        var position = await _positionRepository.GetByIdAsync(id);
+        var position = await _positionRepository.GetQueryable()
+            .Include(p => p.Election)
+            .FirstOrDefaultAsync(p => p.Id == id);
         if (position == null) return false;
+
+        if (position.Election?.IsSealed == true)
+            throw new InvalidOperationException("Cannot delete positions from sealed elections");
 
         await _positionRepository.DeleteAsync(position);
         return true;

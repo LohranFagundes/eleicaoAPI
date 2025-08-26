@@ -36,6 +36,11 @@ public class Voter : BaseEntity
     [StringLength(255)]
     public string? VerificationToken { get; set; }
 
+    [StringLength(255)]
+    public string? PasswordResetToken { get; set; }
+
+    public DateTime? PasswordResetTokenExpiry { get; set; }
+
     public DateTime? LastLoginAt { get; set; }
 
     [StringLength(45)]

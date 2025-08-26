@@ -319,11 +319,16 @@ public class EmailService : IEmailService
         // Add specific emails
         if (target.SpecificEmails != null && target.SpecificEmails.Any())
         {
+            _logger.LogInformation("Adding {EmailCount} specific emails to bulk targets: {Emails}", 
+                target.SpecificEmails.Count, string.Join(", ", target.SpecificEmails));
             targets.AddRange(target.SpecificEmails.Select(email => new EmailTarget { Email = email, Name = "" }));
         }
 
         // Remove duplicates
-        return targets.GroupBy(t => t.Email.ToLower()).Select(g => g.First()).ToList();
+        var finalTargets = targets.GroupBy(t => t.Email.ToLower()).Select(g => g.First()).ToList();
+        _logger.LogInformation("Final bulk email targets after deduplication: {Targets}", 
+            string.Join(", ", finalTargets.Select(t => $"{t.Name} <{t.Email}>")));
+        return finalTargets;
     }
 
     private string PersonalizeEmailContent(string body, string name, string email)

@@ -179,18 +179,12 @@ public class VotingPortalController : ControllerBase
         validation.StartDate = election.StartDate;
         validation.EndDate = election.EndDate;
         validation.IsInVotingPeriod = currentTime >= startDateUtc && currentTime <= endDateUtc;
-        validation.IsActive = !election.IsSealed;
+        validation.IsActive = election.IsSealed;
 
-        // Regra 1: Eleição deve estar lacrada (sealed)
+        // Regra 1: Eleição deve estar lacrada (sealed) para receber votos
         if (!election.IsSealed)
         {
             errors.Add("Election must be sealed before voting can begin");
-        }
-
-        // Regra 2: Eleição deve estar ativa
-        if (election.IsSealed)
-        {
-            errors.Add("Election is sealed and cannot accept votes");
         }
 
         // Regra 3: Deve estar dentro do período de votação

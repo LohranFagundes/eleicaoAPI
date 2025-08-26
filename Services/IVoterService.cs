@@ -16,4 +16,6 @@ public interface IVoterService
     Task<VoterStatisticsDto> GetVoterStatisticsAsync();
     Task<bool> ChangePasswordAsync(int voterId, string currentPassword, string newPassword);
     Task<bool> ResetPasswordAsync(string email, string newPassword);
+    Task<bool> RequestPasswordResetAsync(string email);
+    Task<bool> ResetPasswordWithTokenAsync(string token, string newPassword);
 }

@@ -86,6 +86,9 @@ public class ElectionService : IElectionService
         var election = await _electionRepository.GetByIdAsync(id);
         if (election == null) return null;
 
+        if (election.IsSealed)
+            throw new InvalidOperationException("Cannot modify sealed elections");
+
         if (dto.Title != null) election.Title = dto.Title;
         if (dto.Description != null) election.Description = dto.Description;
         if (dto.ElectionType != null) election.ElectionType = dto.ElectionType;
